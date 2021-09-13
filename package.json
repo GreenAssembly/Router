@@ -1,0 +1,28 @@
+{
+  "name": "router",
+  "version": "1.0.0",
+  "description": "Router for SPA-like system",
+  "main": "dist/index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "NODE_ENV=production webpack"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/GreenAssembly/Router.git"
+  },
+  "author": "GreenAssembly",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/GreenAssembly/Router/issues"
+  },
+  "homepage": "https://github.com/GreenAssembly/Router#readme",
+  "dependencies": {
+    "webpack": "^5.52.1",
+    "webpack-cli": "^4.8.0"
+  },
+  "browserslist": [
+    "> 1%",
+    "last 2 versions"
+  ]
+}
