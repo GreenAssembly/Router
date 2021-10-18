@@ -2,10 +2,13 @@
   "name": "router",
   "version": "1.0.0",
   "description": "Router for SPA-like system",
-  "main": "dist/index.js",
+  "main": "dist/parcel.js",
+  "source": "src/index.js",
+  "module": "dist/module.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "NODE_ENV=production webpack"
+    "build": "NODE_ENV=production webpack",
+    "build-parcel": "parcel build"
   },
   "repository": {
     "type": "git",
@@ -18,11 +21,16 @@
   },
   "homepage": "https://github.com/GreenAssembly/Router#readme",
   "dependencies": {
+    "@swc/helpers": "^0.2.13",
+    "regenerator-runtime": "^0.13.9",
     "webpack": "^5.52.1",
     "webpack-cli": "^4.8.0"
   },
   "browserslist": [
     "> 1%",
     "last 2 versions"
-  ]
+  ],
+  "devDependencies": {
+    "parcel": "^2.0.0"
+  }
 }
