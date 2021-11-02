@@ -1,18 +1,115 @@
-export default class Router {
-    constructor() {
-        this.cache = new Map();
-        this.parser = new DOMParser();
+const on_mount_event = new Event('router:mount', { bubbles: true, cancelable: false });
+const on_destroy_event = new Event('router:destroy', { bubbles: true, cancelable: false });
+const on_loading_event = new Event('router:loading', { bubbles: true, cancelable: false });
+const on_change_event = new Event('router:change', { bubbles: true, cancelable: false });
+class Page {
+    constructor(title, frames, scripts, links) {
+        this.title = title;
+        this.last_loaded_time = new Date();
+        this.frames = frames;
+        this.scripts = scripts;
+        this.links = links;
+    }
 
+    render() {
+        document.title = this.title;
+        window.scrollTo(0, 0);
+
+        // Load all scripts and stylesheets
+        let loadings = [];
+
+        this.links.forEach(href => {
+            loadings.push(
+                new Promise((resolve, reject) => {
+                    let link = document.createElement('link');
+                    link.setAttribute('rel', 'stylesheet');
+                    link.setAttribute('href', href);
+                    link.onload = resolve;
+                    document.head.appendChild(link);
+                })
+            );
+        });
+
+        this.scripts.forEach(src => {
+            loadings.push(
+                new Promise((resolve, _) => {
+                    let script = document.createElement('script');
+                    script.setAttribute('type', 'text/javascript');
+                    script.setAttribute('src', src);
+                    script.onload = resolve;
+                    document.head.appendChild(script);
+                })
+            );
+        });
+
+        // When all scrips and stylesheets are loaded then render frames
+        Promise.all(loadings)
+            .then(() => {
+                for (const frame of document.querySelectorAll('ga-frame')) {
+                    const page_frame = this.frames[frame.getAttribute('name')];
+
+                    if (page_frame !== undefined) {
+                        frame.innerHTML = page_frame;
+                    }
+                }
+
+                window.dispatchEvent(on_mount_event);
+                window.dispatchEvent(on_change_event);
+            });
+    }
+
+    clean() {
+        this.links.forEach(href => {
+            const link = document.head.querySelector(`link[href=${href}]`);
+
+            if (link) {
+                link.remove();
+            }
+        });
+
+        this.scripts.forEach(src => {
+            const script = document.head.querySelector(`script[src=${src}]`);
+
+            if (script) {
+                script.remove();
+            }
+        });
+    }
+}
+
+export default class Router {
+    #cache = new Map();
+    #parser = new DOMParser();
+
+    constructor() {
         const frames = new Map();
+
         for (const frame of document.querySelectorAll('ga-frame')) {
             frames.set(frame.getAttribute('name'), frame.innerHTML);
         }
 
-        window.addEventListener('popstate', () => {
-            window.dispatchEvent(new Event('ga-router:loading', { bubbles: true, cancelable: false }));
-            window.dispatchEvent(new Event('onDestroy'));
+        // Cache the current page
+        this.#cache.set(
+            location.href,
+            new Page(
+                document.title,
+                frames,
+                [...document.querySelectorAll('script')]
+                .filter(script => script.getAttribute('o-no-load') === null && script.getAttribute('src') !== null)
+                .map(script => script.attributes.src.nodeValue),
+                [...document.querySelectorAll('head > link[rel=stylesheet]')]
+                    .filter(link => link.getAttribute('o-no-load') === null)
+                    .map(link => link.attributes.href.nodeValue)
+            )
+        );
 
-            const last_page_visited = [...this.cache.entries()].sort((a, b) => {
+        window.dispatchEvent(on_mount_event);
+
+        window.addEventListener('popstate', () => {
+            window.dispatchEvent(on_loading_event);
+            window.dispatchEvent(on_destroy_event);
+
+            const last_page_visited = [...this.#cache.entries()].sort((a, b) => {
                 if (a[1].last_loaded_time < b[1].last_loaded_time)
                     return 1
                 if (a[1].last_loaded_time > b[1].last_loaded_time)
@@ -21,29 +118,65 @@ export default class Router {
                 return 0
             });
 
-            this.clean(last_page_visited);
-            this.handle_url(location.href);
+            last_page_visited.clean();
+            this.#handle_url(location.href);
         });
+
+        document.body.addEventListener('click', e => {
+            // Select the link
+            const link = e.target instanceof HTMLAnchorElement
+                ? e.target
+                : e.target.parentElement instanceof HTMLAnchorElement
+                    ? e.target.parentElement
+                    : e.target.parentElement instanceof HTMLPictureElement
+                        ? e.target.parentElement.parentElement
+                        : null;
+
+            // Prevent reloading page on click on the same location link
+            if (link && link.href === window.location.href) {
+                e.preventDefault();
+                return;
+            }
+
+            if (link && link.getAttribute('[o-follow]')) {
+                e.preventDefault();
+
+                window.dispatchEvent(on_loading_event);
+                
+                history.pushState({ prev_url: location.href }, null, link.href);
+
+                const prev_page = this.#cache.get(window.history.state.prev_url);
+
+                if (prev_page) {
+                    prev_page.clean();
+                }
+
+                this.#handle_url(link.href);
+            }
+        });
+
+        const links_preload = document.querySelectorAll('[o-preload]');
+        const links_preload_once = document.querySelectorAll('[o-preload-once]');
+
+        // 
+
+        for (const link of links_preload) {
+            link.addEventListener('mouseover', () => {
+                this.#handle_url(link.href, true, false);
+            });
+
+            link.addEventListener('mouseleave', e => )
+        }
     }
 
-    caching(url, title, frames, scripts, links) {
-        this.cache.set(url, {
-            frames,
-            title,
-            last_loaded_time: Date.now(),
-            scripts,
-            links
-        });
-    }
-
-    async handle_url(url, add_to_cache = true, do_rendering = true) {
-        let page = this.cache.get(url);
+    async #handle_url(url, add_to_cache = true, do_rendering = true) {
+        let page = this.#cache.get(url);
 
         if (page) {
             page.last_loaded_time = Date.now();
 
             if (do_rendering) {
-                this.render(page);
+                page.render();
             }
 
             return;
@@ -56,48 +189,42 @@ export default class Router {
 
         if (res.ok) {
             res = await res.text();
-            const parsed_fragment = this.parse(res);
+            const parsed_fragment = this.#parse(res);
 
             if (add_to_cache) {
-                this.caching(
-                    url,
-                    parsed_fragment.title,
-                    parsed_fragment.frames,
-                    parsed_fragment.scripts,
-                    parsed_fragment.links
-                );
+                this.#cache.set(url, parsed_fragment);
             }
 
             page = parsed_fragment;
-            page.last_loaded_time = Date.now();
 
             if (do_rendering) {
-                this.render(page);
+                page.render();
             }
         } else if (res.status === 404) {
-            let parsed_fragment = this.parse(await res.text());
-            this.render(parsed_fragment);
+            let parsed_fragment = this.#parse(await res.text());
+
+            parsed_fragment.render();
         }
     }
 
-    parse(content) {
-        const doc = this.parser.parseFromString(content, 'text/html');
+    #parse(content) {
+        const doc = this.#parser.parseFromString(content, 'text/html');
         const frames = new Map();
 
         for (const frame of doc.querySelector('ga-frame')) {
             frames.set(frame.getAttribute('name'), frame.innerHTML);
         }
 
-        return {
-            title: doc.title,
+        return new Page(
+            doc.title,
             frames,
-            scripts: [...doc.querySelectorAll('script')]
+            [...doc.querySelectorAll('script')]
                 .filter(script => script.getAttribute('o-no-load') === null && script.getAttribute('src') !== null)
                 .map(script => script.attributes.src.nodeValue),
-            links: [...doc.querySelectorAll('head > link[rel=stylesheet')]
+            [...doc.querySelectorAll('head > link[rel=stylesheet')]
                 .filter(link => link.getAttribute('o-no-load') === null)
                 .map(link => link.attributes.href.nodeValue)
-        }
+        )
     }
 }
 
