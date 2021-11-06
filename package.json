@@ -2,7 +2,7 @@
   "name": "router",
   "version": "1.0.0",
   "description": "Router for SPA-like system",
-  "main": "dist/parcel.js",
+  "main": "dist/index.js",
   "source": "src/index.js",
   "module": "dist/module.js",
   "scripts": {

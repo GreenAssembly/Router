@@ -1,9 +1,21 @@
-const on_mount_event = new Event('router:mount', { bubbles: true, cancelable: false });
-const on_destroy_event = new Event('router:destroy', { bubbles: true, cancelable: false });
-const on_loading_event = new Event('router:loading', { bubbles: true, cancelable: false });
-const on_change_event = new Event('router:change', { bubbles: true, cancelable: false });
-class Page {
+class Event {
+    #events = new Map();
+
+    on(event_name, callback) {
+        this.#events.set(event_name, callback);
+    }
+
+    fire(event_name, args = []) {
+        if (this.#events.has(event_name)) {
+            this.#events.get(event_name)(...args);
+        }
+    }
+}
+
+class Route extends Event {
     constructor(title, frames, scripts, links) {
+        super();
+
         this.title = title;
         this.last_loaded_time = new Date();
         this.frames = frames;
@@ -11,7 +23,9 @@ class Page {
         this.links = links;
     }
 
-    render() {
+    render(router) {
+        this.last_loaded_time = new Date();
+
         document.title = this.title;
         window.scrollTo(0, 0);
 
@@ -20,7 +34,7 @@ class Page {
 
         this.links.forEach(href => {
             loadings.push(
-                new Promise((resolve, reject) => {
+                new Promise((resolve, _) => {
                     let link = document.createElement('link');
                     link.setAttribute('rel', 'stylesheet');
                     link.setAttribute('href', href);
@@ -46,469 +60,218 @@ class Page {
         Promise.all(loadings)
             .then(() => {
                 for (const frame of document.querySelectorAll('ga-frame')) {
-                    const page_frame = this.frames[frame.getAttribute('name')];
+                    const frame_name = frame.getAttribute('name');
 
-                    if (page_frame !== undefined) {
+                    if (this.frames.has(frame_name)) {
+                        const page_frame = this.frames.get(frame_name);
+
                         frame.innerHTML = page_frame;
+                        // TODO : bind follow behavior to frame links
+                        Route.init_links(frame, router);
                     }
                 }
 
-                window.dispatchEvent(on_mount_event);
-                window.dispatchEvent(on_change_event);
+                this.fire('mount');
+                // TODO : router.fire('change');
             });
     }
 
     clean() {
-        this.links.forEach(href => {
-            const link = document.head.querySelector(`link[href=${href}]`);
-
-            if (link) {
-                link.remove();
-            }
-        });
-
+        this.links.forEach(href => document.head.querySelector(`link[href="${href}"]`).remove());
+        // TODO : see to add a flag to css and js files handled by the router
         this.scripts.forEach(src => {
-            const script = document.head.querySelector(`script[src=${src}]`);
-
-            if (script) {
-                script.remove();
-            }
+            document.head.querySelector(`script[src="${src}"]`).remove()
         });
+    }
+
+    static init_links(frame, router) {
+        frame
+            .querySelectorAll('[o-follow]')
+            .forEach(link => {
+                const o_follow = link.getAttribute('o-follow');
+                const href = link.getAttribute('href').substr(1);
+        
+                link.addEventListener('click', e => {
+                    e.preventDefault();
+        
+                    // Cannot click on link which target the same location as the current
+                    if (href === router.current_path) {
+                        return;
+                    }
+        
+                    router.fire('loading');
+                    const prev_url = router.current_path;
+        
+                    history.pushState({}, null, href);
+        
+                    router.pages.get(prev_url).clean();
+                    router.push(href);
+                });
+        
+                // Only bind event on follow link which have preload-once or preload value
+                if (['preload-once', 'preload'].includes(o_follow)) {
+                    link.addEventListener('mouseover', () => {
+                        if (o_follow === 'preload-once') {
+                            if (!router.pages.has(href)) {
+                                router.handle_url(href, true, false);
+                            }
+                        } else if (o_follow === 'preload') {
+                            router.handle_url(href, false, false);
+                        }
+                    });
+                }
+            });
     }
 }
 
-export default class Router {
+const extract_scripts = doc => [...doc.querySelectorAll('script')]
+    .filter(script => script.getAttribute('o-no-load') === null && script.getAttribute('src') !== null)
+    .map(script => script.attributes.src.nodeValue);
+
+const extract_stylesheets = doc => [...doc.querySelectorAll('head > link[rel=stylesheet]')]
+    .filter(link => link.getAttribute('o-no-load') === null)
+    .map(link => link.attributes.href.nodeValue);
+
+const extract_frames = doc => new Map([...doc.querySelectorAll('ga-frame')].map(frame => {
+        return [frame.getAttribute('name'), frame.innerHTML]
+    }));
+
+export default class Router extends Event {
     #cache = new Map();
     #parser = new DOMParser();
+    #init = false;
 
-    constructor() {
-        const frames = new Map();
+    get pages() {
+        return new Proxy(this.#cache, {
+            get(target, name) {
+                let res = Reflect.get(target, name);
 
-        for (const frame of document.querySelectorAll('ga-frame')) {
-            frames.set(frame.getAttribute('name'), frame.innerHTML);
-        }
-
-        // Cache the current page
-        this.#cache.set(
-            location.href,
-            new Page(
-                document.title,
-                frames,
-                [...document.querySelectorAll('script')]
-                .filter(script => script.getAttribute('o-no-load') === null && script.getAttribute('src') !== null)
-                .map(script => script.attributes.src.nodeValue),
-                [...document.querySelectorAll('head > link[rel=stylesheet]')]
-                    .filter(link => link.getAttribute('o-no-load') === null)
-                    .map(link => link.attributes.href.nodeValue)
-            )
-        );
-
-        window.dispatchEvent(on_mount_event);
-
-        window.addEventListener('popstate', () => {
-            window.dispatchEvent(on_loading_event);
-            window.dispatchEvent(on_destroy_event);
-
-            const last_page_visited = [...this.#cache.entries()].sort((a, b) => {
-                if (a[1].last_loaded_time < b[1].last_loaded_time)
-                    return 1
-                if (a[1].last_loaded_time > b[1].last_loaded_time)
-                    return -1;
-
-                return 0
-            });
-
-            last_page_visited.clean();
-            this.#handle_url(location.href);
-        });
-
-        document.body.addEventListener('click', e => {
-            // Select the link
-            const link = e.target instanceof HTMLAnchorElement
-                ? e.target
-                : e.target.parentElement instanceof HTMLAnchorElement
-                    ? e.target.parentElement
-                    : e.target.parentElement instanceof HTMLPictureElement
-                        ? e.target.parentElement.parentElement
-                        : null;
-
-            // Prevent reloading page on click on the same location link
-            if (link && link.href === window.location.href) {
-                e.preventDefault();
-                return;
-            }
-
-            if (link && link.getAttribute('[o-follow]')) {
-                e.preventDefault();
-
-                window.dispatchEvent(on_loading_event);
-                
-                history.pushState({ prev_url: location.href }, null, link.href);
-
-                const prev_page = this.#cache.get(window.history.state.prev_url);
-
-                if (prev_page) {
-                    prev_page.clean();
+                if (typeof res === 'function' && (name === 'get' || name === 'has')) {
+                    res = res.bind(target);
                 }
 
-                this.#handle_url(link.href);
+                return res
             }
         });
+    }
 
-        const links_preload = document.querySelectorAll('[o-preload]');
-        const links_preload_once = document.querySelectorAll('[o-preload-once]');
+    constructor() {
+        super();
+        // Init current page now to allow to link some events
+        const current_page = new Route(null, null, null, null);
+        this.#cache.set(this.current_path, current_page);
 
-        // 
+        // Init behavior when DOM is mounted
+        document.addEventListener('readystatechange', e => {
+            // e.target.readyState === 'interactive' || 
+            if ((e.target.readyState === 'complete') && !this.#init) {
+                // Prevent to execute each time the readyState change
+                this.#init = true;
 
-        for (const link of links_preload) {
-            link.addEventListener('mouseover', () => {
-                this.#handle_url(link.href, true, false);
-            });
+                current_page.title = document.title;
+                current_page.frames = extract_frames(document);
+                current_page.scripts = extract_scripts(document);;
+                current_page.links = extract_stylesheets(document);
 
-            link.addEventListener('mouseleave', e => )
+                Route.init_links(document, this);
+                // this.#init_links(document);
+                current_page.fire('mount');
+        
+                window.addEventListener('popstate', () => {
+                    // Find previous page and clean it
+                    const last_page_visited = [...this.#cache.entries()].sort((a, b) => {
+                        if (a[1].last_loaded_time < b[1].last_loaded_time)
+                            return 1
+                        if (a[1].last_loaded_time > b[1].last_loaded_time)
+                            return -1;
+        
+                        return 0
+                    })[0][1];
+            
+                    last_page_visited.fire('destroy');
+                    last_page_visited.clean();
+        
+                    // Render new route
+                    if (this.#cache.has(this.current_path)) {
+                        this.#cache.get(this.current_path).render(this);
+                    }
+                });
+            }
+        })
+    }
+
+    push(location, from_cache = true) {
+        if (from_cache && this.#cache.has(this.current_path)) {
+            this.#cache.get(this.current_path).render(this);
+        } else {
+            this.handle_url(location, true, true);
         }
     }
 
-    async #handle_url(url, add_to_cache = true, do_rendering = true) {
-        let page = this.#cache.get(url);
+    get current_path() {
+        return location.pathname.substr(1);
+    }
 
-        if (page) {
-            page.last_loaded_time = Date.now();
-
-            if (do_rendering) {
-                page.render();
-            }
-
-            return;
-        }
-
-        let headers = new Headers();
-        headers.append('GAR-LOG', null);
-
-        let res = await fetch(url, { headers });
+    async handle_url(url, add_to_cache = true, do_rendering = true) {
+        let page = null;
+        let res = await fetch(url, {
+            headers: new Headers({
+                'GAR-LOG': null
+            })
+        });
+        const text = await res.text();
 
         if (res.ok) {
-            res = await res.text();
-            const parsed_fragment = this.#parse(res);
+            const parsed_fragment = this.#parse(text);
 
             if (add_to_cache) {
                 this.#cache.set(url, parsed_fragment);
             }
 
-            page = parsed_fragment;
-
-            if (do_rendering) {
-                page.render();
+            if (!do_rendering) {
+                return;
             }
-        } else if (res.status === 404) {
-            let parsed_fragment = this.#parse(await res.text());
 
-            parsed_fragment.render();
+            page = parsed_fragment;
+        } else if (res.status === 404) {
+            if (!res) {
+                return;
+            }
+
+            page = this.#parse(text);
         }
+
+        page.render(this);
     }
 
     #parse(content) {
         const doc = this.#parser.parseFromString(content, 'text/html');
-        const frames = new Map();
 
-        for (const frame of doc.querySelector('ga-frame')) {
-            frames.set(frame.getAttribute('name'), frame.innerHTML);
-        }
-
-        return new Page(
+        return new Route(
             doc.title,
-            frames,
-            [...doc.querySelectorAll('script')]
-                .filter(script => script.getAttribute('o-no-load') === null && script.getAttribute('src') !== null)
-                .map(script => script.attributes.src.nodeValue),
-            [...doc.querySelectorAll('head > link[rel=stylesheet')]
-                .filter(link => link.getAttribute('o-no-load') === null)
-                .map(link => link.attributes.href.nodeValue)
+            extract_frames(doc),
+            extract_scripts(doc),
+            extract_stylesheets(doc)
         )
+    }
+
+    on(event_name, callback) {
+        switch (event_name) {
+            case 'mount':
+            case 'destroy':
+                this.#cache.get(this.current_path).on(event_name, callback);
+            break;
+
+            case 'loading':
+            case 'change':
+                this.on(event_name, callback);
+            break;
+            default:
+                throw new TypeError('Unrecognized event')
+        }
     }
 }
 
-// export default class Router {
-//     constructor() {
-//         this.cache = {};
-//         this.onMountEvent = new Event('onMount');
-//         this.onDestroyEvent = new Event('onDestroy');
-//         this.parser = new DOMParser();
-
-//         const frames = {};
-//         for (const frame of document.querySelectorAll('ga-frame')) {
-//             frames[frame.getAttribute('name')] = frame.innerHTML;
-//         }
-
-//         // Cache page on which the router has been initialized
-//         // TODO : handle case when script has no src attribute
-//         this.caching(
-//             location.href,
-//             document.title,
-//             frames,
-//             [...document.querySelectorAll('script')]
-//                 .filter(script => script.getAttribute('o-no-load') === null && script.getAttribute('src') !== null)
-//                 .map(script => script.attributes.src.nodeValue),
-//             [...document.querySelectorAll('head > link[rel=stylesheet]')]
-//                 .filter(link => link.getAttribute('o-no-load') === null)
-//                 .map(link => link.attributes.href.nodeValue)
-//         );
-
-//         window.dispatchEvent(this.onMountEvent);
-
-//         window.addEventListener('popstate', e => {
-//             window.dispatchEvent(new Event('router:loading', { bubbles: true, cancelable: false }))
-//             window.dispatchEvent(this.onDestroyEvent)
-
-//             const last_page_visited = Object.entries(this.cache).sort((a, b) => {
-//                 if (a[1].last_loaded_time < b[1].last_loaded_time)
-//                     return 1
-//                 if (a[1].last_loaded_time > b[1].last_loaded_time)
-//                     return -1;
-
-//                 return 0
-//             })[0][0];
-
-//             this.clean(last_page_visited)
-//             this.handle_url(location.href)
-//         })
-
-//         document.body.addEventListener('click', e => {
-//             const link = e.target instanceof HTMLAnchorElement
-//                 ? e.target
-//                 : e.target.parentElement instanceof HTMLAnchorElement
-//                     ? e.target.parentElement
-//                     : e.target.parentElement instanceof HTMLPictureElement
-//                         ? e.target.parentElement.parentElement
-//                         : null;
-
-//             if (link && link.href === window.location.href) {
-//                 e.preventDefault();
-//                 return;
-//             }
-
-//             if (link && link.matches('[o-follow]')) {
-//                 e.preventDefault();
-
-//                 window.dispatchEvent(new Event('router:loading', { bubbles: true, cancelable: false }))
-//                 window.dispatchEvent(this.onDestroyEvent)
-
-//                 // console.info('Remove old hooks', this.cache[location.href])
-//                 // window.removeEventListener('onMount', this.cache[location.href].onMount)
-//                 // window.removeEventListener('onDestroy', this.cache[location.href].onDestroy)
-
-//                 // const cached = this.cache[location.href]
-
-//                 // if (cached) {
-//                 //     // console.info('Remove old hooks', this.cache[location.href])
-//                 //     const onMount = this.cache[location.href].onMount;
-//                 //     if (onMount) window.removeEventListener('onMount', onMount);
-//                 //     const onDestroy = this.cache[location.href].onDestroy;
-//                 //     if (onDestroy) window.removeEventListener('onDestroy', onDestroy);
-
-//                 // }
-
-//                 history.pushState({ prevUrl: location.href }, null, link.href)
-                
-//                 this.clean(window.history.state.prevUrl)
-//                 this.handle_url(link.href, true, true)
-//             }
-//         })
-
-//         const links_preload = document.querySelectorAll('[o-preload]')
-//         const links_preload_once = document.querySelectorAll('[o-preload-once]')
-
-//         // Warn developer an unintended behavior may occur
-//         for (const link_preload_once of links_preload_once) {
-//             for (const link_preload of links_preload) {
-//                 if (link_preload_once == link_preload) {
-//                     console.warn('A link has [o-preload-once] and [o-preload] tags at the same time')
-//                 }
-//             }
-//         }
-        
-//         for (const link of links_preload) {
-//             link.addEventListener('mouseover', () => {
-//                 this.handle_url(link.href, true, false)
-//             })
-//             link.addEventListener('mouseleave', e => {
-//                 // delete pages[e.target.href]
-//             })
-//         }
-        
-//         for (const link of links_preload_once) {
-//             link.addEventListener('mouseover', () => {
-//                 if (!this.cache[link.href])
-//                     this.handle_url(link.href, true, false)
-//             })
-//         }
-//     }
-
-//     onMount(callback) {
-//         this.cache[location.href].onMount = callback
-//         // console.log('CREATE ONMOUNT', this.cache[location.href])
-//         window.addEventListener('onMount', this.cache[location.href].onMount)
-//     }
-
-//     onDestroy(callback) {
-//         this.cache[location.href].onDestroy = callback
-//         window.addEventListener('onDestroy', this.cache[location.href].onDestroy)
-//     }
-
-//     caching(url, title, frames, scripts, links) {
-//         this.cache[url] = {
-//             frames,
-//             title,
-//             last_loaded_time: Date.now(),
-//             scripts,
-//             links
-//         }
-//     }
-
-//     async handle_url(url, add_in_cache = true, do_rendering = true) {
-//         let page = this.cache[url];
-
-//         if (!page) {
-//             let headers = new Headers();
-//             headers.append('GAR-Log', false);
-
-//             let res = await fetch(url, {
-//                 headers
-//             });
-
-//             if (res.ok) {
-//                 res = await res.text()
-//                 let parsed_fragment = this.parse(res)
-        
-//                 if (add_in_cache) {
-//                     this.caching(
-//                         url,
-//                         parsed_fragment.title,
-//                         parsed_fragment.frames,
-//                         parsed_fragment.scripts,
-//                         parsed_fragment.links
-//                     )
-//                 }
-        
-//                 page = parsed_fragment;
-
-//                 page.last_loaded_time = Date.now();
-    
-//                 if (do_rendering === true)
-//                     this.render(page);
-//             } else if(res.status === 404) {
-//                 let parsed_fragment = this.parse(await res.text());
-//                 this.render(parsed_fragment);
-//             }
-//         } else {
-//             page.last_loaded_time = Date.now();
-    
-//             if (do_rendering === true)
-//                 this.render(page);
-//         }
-
-//     }
-
-//     parse(content) {
-//         const doc = this.parser.parseFromString(content, 'text/html');
-//         const frames = {};
-
-//         for (const frame of doc.querySelectorAll('ga-frame')) {
-//             frames[frame.getAttribute('name')] = frame.innerHTML;
-//         }
-
-//         return {
-//             title: doc.title,
-//             frames,
-//             scripts: [...doc.querySelectorAll('script')]
-//                 .filter(script => script.getAttribute('o-no-load') === null && script.getAttribute('src') !== null)
-//                 .map(script => script.attributes.src.nodeValue),
-//             links: [...doc.querySelectorAll('head > link[rel=stylesheet]')]
-//                 .filter(link => link.getAttribute('o-no-load') === null)
-//                 .map(link => link.attributes.href.nodeValue)
-//         }
-//     }
-
-//     render(page) {
-//         let loadings = []
-
-//         // window.dispatchEvent(new Event('router:loading'))
-
-//         page.scripts.forEach(newScript => {
-//             loadings.push(
-//                 new Promise((resolve, reject) => {
-//                     let script = document.createElement('script')
-//                     script.type = 'text/javascript'
-//                     script.src = newScript
-//                     script.onload = resolve
-//                     document.head.appendChild(script)
-//                 })
-//             )
-//         })
-
-//         document.title = page.title
-//         window.scrollTo(0, 0);
-
-//         page.links.forEach(link => {
-//             loadings.push(
-//                 new Promise((resolve, reject) => {
-//                     let link_el = document.createElement('link');
-//                     link_el.rel = 'stylesheet';
-//                     link_el.href = link;
-//                     link_el.onload = resolve;
-//                     document.head.appendChild(link_el);
-//                 })
-//             )
-//         })
-
-//         Promise.all(loadings)
-//             .then(() => {
-//                 for (let frame of document.querySelectorAll('ga-frame')) {
-//                     const page_frame = page.frames[frame.getAttribute('name')];
-        
-//                     if (page_frame !== undefined) {
-//                         frame.innerHTML = page_frame;
-//                     }
-//                 }
-
-//                 window.dispatchEvent(this.onMountEvent)
-
-//                 if (page.onMount) {
-//                     window.addEventListener('onMount', page.onMount)
-//                     // window.dispatchEvent(this.onMountEvent)
-//                 }
-//                 if (page.onDestroy) window.addEventListener('onDestroy', page.onDestroy)
-        
-//                 window.dispatchEvent(new Event('router:change'))
-//             })
-
-//     }
-
-//     clean(url) {
-//         const page_to_clear = this.cache[url]
-
-//         if (page_to_clear) {
-//             // Remove old CSS files
-//             page_to_clear.links.forEach(link => {
-//                 const link_el = document.head.querySelector(`link[href="${link}"]`);
-//                 link_el.remove()
-//             })
-    
-//             // Remove old JS files
-//             page_to_clear.scripts.forEach(script => {
-//                 const script_el = document.head.querySelector(`script[src="${script}"]`)
-//                 script_el.remove()
-//             })
-//         } else { // Page not in cache, maybe 404 page?
-//             // Remove old CSS files
-//             [...document.querySelectorAll('script')]
-//                 .filter(script => script.getAttribute('o-no-load') === null)
-//                 .forEach(script => script.remove());
-
-//             [...document.querySelectorAll('head > link[rel=stylesheet]')]
-//                 .filter(link => link.getAttribute('o-no-load') === null)
-//                 .forEach(link => link.remove());
-//         }
-
-//     }
-// }
+if (window.router === undefined) {
+    window.router = new Router();
+}
