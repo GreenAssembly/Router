@@ -73,12 +73,12 @@ class Route extends Event {
 
                 this.fire('mount');
                 // TODO : router.fire('change');
+                router.fire('change');
             });
     }
 
     clean() {
         this.links.forEach(href => document.head.querySelector(`link[href="${href}"]`).remove());
-        // TODO : see to add a flag to css and js files handled by the router
         this.scripts.forEach(src => {
             document.head.querySelector(`script[src="${src}"]`).remove()
         });
@@ -264,7 +264,7 @@ export default class Router extends Event {
 
             case 'loading':
             case 'change':
-                this.on(event_name, callback);
+                super.on('change', callback);
             break;
             default:
                 throw new TypeError('Unrecognized event')
