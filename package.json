@@ -7,8 +7,7 @@
   "module": "dist/module.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "NODE_ENV=production webpack",
-    "build2": "parcel build"
+    "build": "parcel build"
   },
   "repository": {
     "type": "git",
@@ -21,7 +20,8 @@
   },
   "homepage": "https://github.com/GreenAssembly/Router#readme",
   "dependencies": {
-    "@swc/helpers": "^0.3.2"
+    "@swc/helpers": "^0.3.2",
+    "regenerator-runtime": "^0.13.9"
   },
   "browserslist": [
     "> 1%",
